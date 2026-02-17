@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"regexp"
 	"strings"
 )
 
@@ -174,11 +175,15 @@ func (p *KimiCliProvider) buildToolsPrompt(tools []ToolDefinition) string {
 const maxKimiResponseLength = 10000 // 10K characters max
 
 // parseOutput processes the output from kimi --print.
+// The kimi CLI can output in different formats - we need to extract just the assistant's response text.
 func (p *KimiCliProvider) parseOutput(output string) (*LLMResponse, error) {
-	// The kimi CLI in print mode outputs the response directly
-	// We need to extract tool calls from the text (similar to ClaudeCliProvider)
-	
 	content := strings.TrimSpace(output)
+	
+	// Try to extract text from structured format (TurnBegin/TextPart/TurnEnd)
+	// This handles the debug/structured output format
+	if extracted := extractTextFromStructuredOutput(content); extracted != "" {
+		content = extracted
+	}
 	
 	// Truncate if response is excessively long
 	if len(content) > maxKimiResponseLength {
@@ -201,6 +206,56 @@ func (p *KimiCliProvider) parseOutput(output string) (*LLMResponse, error) {
 		FinishReason: finishReason,
 		Usage:        nil, // Kimi CLI doesn't provide usage info in print mode
 	}, nil
+}
+
+// extractTextFromStructuredOutput extracts the actual response text from Kimi's structured output format
+// Example format:
+// TurnBegin(...)
+// StepBegin(...)
+// TextPart(type='text', text='ACTUAL RESPONSE HERE')
+// TurnEnd()
+func extractTextFromStructuredOutput(output string) string {
+	// Look for TextPart with text field
+	// Pattern: TextPart(...text='CONTENT'...)
+	// Handle both single and double quotes, and multiline content
+	
+	var texts []string
+	
+	// Pattern 1: text='...' (single quotes, multiline)
+	textPartRegex := regexp.MustCompile(`TextPart\([^)]*text=['"](.+?)['"][^)]*\)`)
+	matches := textPartRegex.FindAllStringSubmatch(output, -1)
+	
+	for _, match := range matches {
+		if len(match) > 1 {
+			text := match[1]
+			// Unescape newlines and quotes
+			text = strings.ReplaceAll(text, "\\n", "\n")
+			text = strings.ReplaceAll(text, "\\'", "'")
+			text = strings.ReplaceAll(text, `\"`, `"`)
+			texts = append(texts, text)
+		}
+	}
+	
+	if len(texts) > 0 {
+		return strings.Join(texts, "\n")
+	}
+	
+	// Pattern 2: Try to find content between TurnBegin and TurnEnd
+	turnRegex := regexp.MustCompile(`TurnBegin\([^)]*\)([\s\S]*?)TurnEnd\(\)`)
+	if match := turnRegex.FindStringSubmatch(output); len(match) > 1 {
+		inner := match[1]
+		// Extract text from TextPart inside
+		textRegex := regexp.MustCompile(`text=['"](.+?)['"]`)
+		if textMatch := textRegex.FindStringSubmatch(inner); len(textMatch) > 1 {
+			text := textMatch[1]
+			text = strings.ReplaceAll(text, "\\n", "\n")
+			text = strings.ReplaceAll(text, "\\'", "'")
+			text = strings.ReplaceAll(text, `\"`, `"`)
+			return text
+		}
+	}
+	
+	return ""
 }
 
 

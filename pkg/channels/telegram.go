@@ -97,6 +97,60 @@ func (c *TelegramChannel) SetTranscriber(transcriber *voice.GroqTranscriber) {
 	c.transcriber = transcriber
 }
 
+// startThinking starts the typing indicator and placeholder message
+// Similar to OpenClaw's behavior - shows the bot is actively working
+func (c *TelegramChannel) startThinking(ctx context.Context, chatID int64, chatIDStr string) {
+	// Send typing action (shows "typing..." in chat)
+	err := c.bot.SendChatAction(ctx, tu.ChatAction(tu.ID(chatID), telego.ChatActionTyping))
+	if err != nil {
+		logger.DebugCF("telegram", "Failed to send typing action", map[string]interface{}{
+			"error": err.Error(),
+		})
+	}
+
+	// Stop any previous thinking animation
+	if prevStop, ok := c.stopThinking.Load(chatIDStr); ok {
+		if cf, ok := prevStop.(*thinkingCancel); ok && cf != nil {
+			cf.Cancel()
+		}
+	}
+
+	// Create cancel function for thinking state (5 minute timeout)
+	_, thinkCancel := context.WithTimeout(ctx, 5*time.Minute)
+	c.stopThinking.Store(chatIDStr, &thinkingCancel{fn: thinkCancel})
+
+	// Send placeholder message that will be edited later
+	// Using a simple emoji that indicates processing
+	pMsg, err := c.bot.SendMessage(ctx, tu.Message(tu.ID(chatID), "⏳"))
+	if err == nil {
+		c.placeholders.Store(chatIDStr, pMsg.MessageID)
+	} else {
+		logger.DebugCF("telegram", "Failed to send placeholder", map[string]interface{}{
+			"error": err.Error(),
+		})
+	}
+
+	// Keep sending typing action periodically while processing
+	go func() {
+		ticker := time.NewTicker(4 * time.Second) // Telegram typing lasts ~5 seconds
+		defer ticker.Stop()
+		
+		for {
+			select {
+			case <-ticker.C:
+				// Check if still thinking
+				if _, ok := c.stopThinking.Load(chatIDStr); ok {
+					_ = c.bot.SendChatAction(ctx, tu.ChatAction(tu.ID(chatID), telego.ChatActionTyping))
+				} else {
+					return
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+}
+
 // loadCustomCommands loads custom commands from config
 func (c *TelegramChannel) loadCustomCommands() {
 	if c.cmdRegistry == nil {
@@ -490,31 +544,10 @@ func (c *TelegramChannel) handleMessage(ctx context.Context, message *telego.Mes
 		"preview":   utils.Truncate(content, 50),
 	})
 
-	// Thinking indicator
-	err := c.bot.SendChatAction(ctx, tu.ChatAction(tu.ID(chatID), telego.ChatActionTyping))
-	if err != nil {
-		logger.ErrorCF("telegram", "Failed to send chat action", map[string]interface{}{
-			"error": err.Error(),
-		})
-	}
-
-	// Stop any previous thinking animation
+	// Start thinking indicator (typing animation + placeholder message)
+	// This mimics OpenClaw's behavior - shows the bot is "typing"
 	chatIDStr := fmt.Sprintf("%d", chatID)
-	if prevStop, ok := c.stopThinking.Load(chatIDStr); ok {
-		if cf, ok := prevStop.(*thinkingCancel); ok && cf != nil {
-			cf.Cancel()
-		}
-	}
-
-	// Create cancel function for thinking state
-	_, thinkCancel := context.WithTimeout(ctx, 5*time.Minute)
-	c.stopThinking.Store(chatIDStr, &thinkingCancel{fn: thinkCancel})
-
-	pMsg, err := c.bot.SendMessage(ctx, tu.Message(tu.ID(chatID), "Thinking... 💭"))
-	if err == nil {
-		pID := pMsg.MessageID
-		c.placeholders.Store(chatIDStr, pID)
-	}
+	c.startThinking(ctx, chatID, chatIDStr)
 
 	metadata := map[string]string{
 		"message_id": fmt.Sprintf("%d", message.MessageID),
