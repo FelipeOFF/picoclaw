@@ -207,11 +207,26 @@ show_status() {
 
 # Show logs
 show_logs() {
-    echo -e "${BLUE}📜 Showing logs (press Ctrl+C to exit)...${NC}"
-    if [ "$EUID" -eq 0 ]; then
-        journalctl -u "$SERVICE_NAME" -f --no-pager
+    local lines="${1:-100}"
+    local follow="${2:-false}"
+    
+    if [ "$follow" = "true" ]; then
+        echo -e "${BLUE}📜 Showing last $lines lines and following new logs...${NC}"
+        echo -e "${YELLOW}⚠️  Press Ctrl+C to exit${NC}"
+        echo ""
+        if [ "$EUID" -eq 0 ]; then
+            journalctl -u "$SERVICE_NAME" -n "$lines" -f --no-pager
+        else
+            sudo journalctl -u "$SERVICE_NAME" -n "$lines" -f --no-pager
+        fi
     else
-        sudo journalctl -u "$SERVICE_NAME" -f --no-pager
+        echo -e "${BLUE}📜 Showing last $lines lines (use 'logs -f' to follow)...${NC}"
+        echo ""
+        if [ "$EUID" -eq 0 ]; then
+            journalctl -u "$SERVICE_NAME" -n "$lines" --no-pager
+        else
+            sudo journalctl -u "$SERVICE_NAME" -n "$lines" --no-pager
+        fi
     fi
 }
 
@@ -246,7 +261,7 @@ Commands:
   stop        Stop the service
   restart     Restart the service
   status      Show service status
-  logs        Show and follow logs
+  logs        Show last 100 lines (use 'logs -f' to follow)
   uninstall   Remove the systemd service
   help        Show this help message
 
@@ -260,8 +275,11 @@ Examples:
   # Check status
   ./install-systemd-service.sh status
 
-  # View logs
+  # View last 100 lines
   ./install-systemd-service.sh logs
+
+  # View and follow logs (Ctrl+C to exit)
+  ./install-systemd-service.sh logs -f
 
   # Restart after config changes
   ./install-systemd-service.sh restart
@@ -309,7 +327,12 @@ main() {
             show_status
             ;;
         logs)
-            show_logs
+            # Check for -f flag
+            if [ "${2:-}" = "-f" ] || [ "${2:-}" = "--follow" ]; then
+                show_logs 100 true
+            else
+                show_logs 100 false
+            fi
             ;;
         uninstall)
             uninstall_service

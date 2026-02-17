@@ -235,7 +235,7 @@ func DefaultConfig() *Config {
 				RestrictToWorkspace: true,
 				Provider:            "",
 				Model:               "glm-4.7",
-				MaxTokens:           8192,
+				MaxTokens:           65536, // 64K tokens - optimized for Kimi K2.5 (256K context window)
 				Temperature:         0.7,
 				MaxToolIterations:   20,
 			},

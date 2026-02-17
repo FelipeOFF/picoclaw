@@ -155,12 +155,21 @@ func (p *KimiCliProvider) buildToolsPrompt(tools []ToolDefinition) string {
 	return sb.String()
 }
 
+// Max response length to prevent excessive output
+const maxKimiResponseLength = 10000 // 10K characters max
+
 // parseOutput processes the output from kimi --print.
 func (p *KimiCliProvider) parseOutput(output string) (*LLMResponse, error) {
 	// The kimi CLI in print mode outputs the response directly
 	// We need to extract tool calls from the text (similar to ClaudeCliProvider)
 	
 	content := strings.TrimSpace(output)
+	
+	// Truncate if response is excessively long
+	if len(content) > maxKimiResponseLength {
+		content = content[:maxKimiResponseLength] + 
+			"\n\n[Response truncated due to excessive length. Please be more specific in your request.]"
+	}
 	
 	// Extract tool calls from response text
 	toolCalls := extractToolCallsFromText(content)

@@ -20,19 +20,22 @@ import (
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/sipeed/picoclaw/pkg/session"
 	"github.com/sipeed/picoclaw/pkg/utils"
 	"github.com/sipeed/picoclaw/pkg/voice"
 )
 
 type TelegramChannel struct {
 	*BaseChannel
-	bot          *telego.Bot
-	commands     TelegramCommander
-	config       *config.Config
-	chatIDs      map[string]int64
-	transcriber  *voice.GroqTranscriber
-	placeholders sync.Map // chatID -> messageID
-	stopThinking sync.Map // chatID -> thinkingCancel
+	bot             *telego.Bot
+	commands        TelegramCommander
+	cmdRegistry     *CommandRegistry
+	streamingSender *StreamingSender
+	config          *config.Config
+	chatIDs         map[string]int64
+	transcriber     *voice.GroqTranscriber
+	placeholders    sync.Map // chatID -> messageID
+	stopThinking    sync.Map // chatID -> thinkingCancel
 }
 
 type thinkingCancel struct {
@@ -45,7 +48,7 @@ func (c *thinkingCancel) Cancel() {
 	}
 }
 
-func NewTelegramChannel(cfg *config.Config, bus *bus.MessageBus) (*TelegramChannel, error) {
+func NewTelegramChannel(cfg *config.Config, bus *bus.MessageBus, workspace string) (*TelegramChannel, error) {
 	var opts []telego.BotOption
 	telegramCfg := cfg.Channels.Telegram
 
@@ -67,16 +70,26 @@ func NewTelegramChannel(cfg *config.Config, bus *bus.MessageBus) (*TelegramChann
 	}
 
 	base := NewBaseChannel("telegram", telegramCfg, bus, telegramCfg.AllowFrom)
+	
+	// Create command registry
+	cmdRegistry := NewCommandRegistry(bot, cfg, workspace)
+	
+	// Create streaming sender optimized for multi-core systems
+	streamingConfig := DefaultStreamingConfig()
+	streamingConfig.ParallelWorkers = 4 // Use 4 workers for your 6 cores
+	streamingSender := NewStreamingSender(bot, streamingConfig)
 
 	return &TelegramChannel{
-		BaseChannel:  base,
-		commands:     NewTelegramCommands(bot, cfg),
-		bot:          bot,
-		config:       cfg,
-		chatIDs:      make(map[string]int64),
-		transcriber:  nil,
-		placeholders: sync.Map{},
-		stopThinking: sync.Map{},
+		BaseChannel:     base,
+		commands:        &cmdAdapter{registry: cmdRegistry},
+		cmdRegistry:     cmdRegistry,
+		streamingSender: streamingSender,
+		bot:             bot,
+		config:          cfg,
+		chatIDs:         make(map[string]int64),
+		transcriber:     nil,
+		placeholders:    sync.Map{},
+		stopThinking:    sync.Map{},
 	}, nil
 }
 
@@ -84,8 +97,42 @@ func (c *TelegramChannel) SetTranscriber(transcriber *voice.GroqTranscriber) {
 	c.transcriber = transcriber
 }
 
+// loadCustomCommands loads custom commands from config
+func (c *TelegramChannel) loadCustomCommands() {
+	if c.cmdRegistry == nil {
+		return
+	}
+	
+	// Custom commands can be added here from config
+	// For now, we'll just log that the registry is ready
+	logger.DebugCF("telegram", "Command registry ready", map[string]interface{}{
+		"native_commands": len(c.cmdRegistry.native),
+	})
+}
+
+// SetSessionManager sets the session manager for the command registry
+func (c *TelegramChannel) SetSessionManager(sm *session.SessionManager) {
+	if c.cmdRegistry != nil {
+		c.cmdRegistry.SetSessionManager(sm)
+	}
+}
+
 func (c *TelegramChannel) Start(ctx context.Context) error {
 	logger.InfoC("telegram", "Starting Telegram bot (polling mode)...")
+
+	// Load custom commands from config
+	c.loadCustomCommands()
+
+	// Sync command menu with Telegram
+	if c.cmdRegistry != nil {
+		if err := c.cmdRegistry.SyncMenuCommands(ctx); err != nil {
+			logger.WarnCF("telegram", "Failed to sync menu commands", map[string]interface{}{
+				"error": err.Error(),
+			})
+		} else {
+			logger.InfoC("telegram", "Menu commands synced successfully")
+		}
+	}
 
 	updates, err := c.bot.UpdatesViaLongPolling(ctx, &telego.GetUpdatesParams{
 		Timeout: 30,
@@ -99,6 +146,7 @@ func (c *TelegramChannel) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to create bot handler: %w", err)
 	}
 
+	// Basic commands
 	bh.HandleMessage(func(ctx *th.Context, message telego.Message) error {
 		c.commands.Help(ctx, message)
 		return nil
@@ -107,14 +155,33 @@ func (c *TelegramChannel) Start(ctx context.Context) error {
 		return c.commands.Start(ctx, message)
 	}, th.CommandEqual("start"))
 
+	// Config commands
 	bh.HandleMessage(func(ctx *th.Context, message telego.Message) error {
 		return c.commands.Show(ctx, message)
 	}, th.CommandEqual("show"))
-
 	bh.HandleMessage(func(ctx *th.Context, message telego.Message) error {
 		return c.commands.List(ctx, message)
 	}, th.CommandEqual("list"))
 
+	// Session management
+	bh.HandleMessage(func(ctx *th.Context, message telego.Message) error {
+		return c.commands.Reset(ctx, message)
+	}, th.CommandEqual("reset"))
+	bh.HandleMessage(func(ctx *th.Context, message telego.Message) error {
+		return c.commands.Session(ctx, message)
+	}, th.CommandEqual("session"))
+
+	// Model commands
+	bh.HandleMessage(func(ctx *th.Context, message telego.Message) error {
+		return c.commands.Model(ctx, message)
+	}, th.CommandEqual("model"))
+
+	// Status command
+	bh.HandleMessage(func(ctx *th.Context, message telego.Message) error {
+		return c.commands.Status(ctx, message)
+	}, th.CommandEqual("status"))
+
+	// Handle regular messages
 	bh.HandleMessage(func(ctx *th.Context, message telego.Message) error {
 		return c.handleMessage(ctx, &message)
 	}, th.AnyMessage())
@@ -139,6 +206,13 @@ func (c *TelegramChannel) Stop(ctx context.Context) error {
 	return nil
 }
 
+// Telegram message limits
+const (
+	telegramMaxMessageLength      = 4096
+	telegramMaxMessageLengthSafe  = 4000  // Leave some margin for HTML formatting
+	telegramMaxTotalContentLength = 50000 // Absolute max before heavy truncation (50KB)
+)
+
 func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) error {
 	if !c.IsRunning() {
 		return fmt.Errorf("telegram bot not running")
@@ -157,7 +231,20 @@ func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) err
 		c.stopThinking.Delete(msg.ChatID)
 	}
 
-	htmlContent := markdownToTelegramHTML(msg.Content)
+	content := msg.Content
+	
+	// Use streaming sender for large messages (optimized for multi-core)
+	// This handles splitting, parallel processing, and rate limiting
+	if c.streamingSender != nil && len(content) > telegramMaxMessageLengthSafe {
+		logger.InfoCF("telegram", "Using streaming sender for large message", map[string]interface{}{
+			"content_length": len(content),
+			"chat_id":        msg.ChatID,
+		})
+		return c.streamingSender.SendLargeMessageParallel(ctx, chatID, content)
+	}
+	
+	// For smaller messages, use normal send with HTML formatting
+	htmlContent := markdownToTelegramHTML(content)
 
 	// Try to edit placeholder
 	if pID, ok := c.placeholders.Load(msg.ChatID); ok {
@@ -183,6 +270,98 @@ func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) err
 		return err
 	}
 
+	return nil
+}
+
+// sendSplitMessages splits a long message into multiple Telegram messages
+func (c *TelegramChannel) sendSplitMessages(ctx context.Context, chatID int64, content string) error {
+	// Split by paragraphs first to keep context
+	paragraphs := strings.Split(content, "\n\n")
+	
+	var currentChunk strings.Builder
+	chunkCount := 0
+	
+	for _, paragraph := range paragraphs {
+		// If a single paragraph is too long, split it further
+		if len(paragraph) > telegramMaxMessageLengthSafe {
+			// Send current chunk if not empty
+			if currentChunk.Len() > 0 {
+				if err := c.sendMessageChunk(ctx, chatID, currentChunk.String()); err != nil {
+					return err
+				}
+				chunkCount++
+				currentChunk.Reset()
+			}
+			
+			// Split long paragraph by lines
+			lines := strings.Split(paragraph, "\n")
+			for _, line := range lines {
+				if currentChunk.Len()+len(line)+1 > telegramMaxMessageLengthSafe {
+					if currentChunk.Len() > 0 {
+						if err := c.sendMessageChunk(ctx, chatID, currentChunk.String()); err != nil {
+							return err
+						}
+						chunkCount++
+						currentChunk.Reset()
+					}
+				}
+				if currentChunk.Len() > 0 {
+					currentChunk.WriteString("\n")
+				}
+				currentChunk.WriteString(line)
+			}
+			continue
+		}
+		
+		// Check if adding this paragraph would exceed the limit
+		if currentChunk.Len()+len(paragraph)+2 > telegramMaxMessageLengthSafe {
+			if currentChunk.Len() > 0 {
+				if err := c.sendMessageChunk(ctx, chatID, currentChunk.String()); err != nil {
+					return err
+				}
+				chunkCount++
+				currentChunk.Reset()
+			}
+		}
+		
+		if currentChunk.Len() > 0 {
+			currentChunk.WriteString("\n\n")
+		}
+		currentChunk.WriteString(paragraph)
+	}
+	
+	// Send final chunk
+	if currentChunk.Len() > 0 {
+		if err := c.sendMessageChunk(ctx, chatID, currentChunk.String()); err != nil {
+			return err
+		}
+		chunkCount++
+	}
+	
+	logger.InfoCF("telegram", "Message split and sent", map[string]interface{}{
+		"chunks": chunkCount,
+	})
+	
+	return nil
+}
+
+// sendMessageChunk sends a single message chunk
+func (c *TelegramChannel) sendMessageChunk(ctx context.Context, chatID int64, content string) error {
+	htmlContent := markdownToTelegramHTML(content)
+	
+	tgMsg := tu.Message(tu.ID(chatID), htmlContent)
+	tgMsg.ParseMode = telego.ModeHTML
+	
+	if _, err := c.bot.SendMessage(ctx, tgMsg); err != nil {
+		// Try without HTML parsing
+		tgMsg.ParseMode = ""
+		tgMsg.Text = content
+		_, err = c.bot.SendMessage(ctx, tgMsg)
+		return err
+	}
+	
+	// Small delay to avoid rate limiting
+	time.Sleep(100 * time.Millisecond)
 	return nil
 }
 

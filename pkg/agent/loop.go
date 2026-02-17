@@ -383,6 +383,18 @@ func (al *AgentLoop) runAgentLoop(ctx context.Context, opts processOptions) (str
 		return "", err
 	}
 
+	// HARD LIMIT: Truncate excessively long responses to prevent errors
+	// This is a safety net in case the provider doesn't limit properly
+	const maxResponseLength = 15000 // 15K characters max
+	if len(finalContent) > maxResponseLength {
+		logger.WarnCF("agent", "Response too long, truncating", map[string]interface{}{
+			"original_length": len(finalContent),
+			"max_length":      maxResponseLength,
+		})
+		finalContent = finalContent[:maxResponseLength] + 
+			"\n\n[Response truncated due to excessive length. Please be more specific in your request.]"
+	}
+
 	// If last tool had ForUser content and we already sent it, we might not need to send final response
 	// This is controlled by the tool's Silent flag and ForUser content
 
@@ -726,23 +738,30 @@ func (al *AgentLoop) updateToolContexts(channel, chatID string) {
 func (al *AgentLoop) maybeSummarize(sessionKey, channel, chatID string) {
 	newHistory := al.sessions.GetHistory(sessionKey)
 	tokenEstimate := al.estimateTokens(newHistory)
-	threshold := al.contextWindow * 75 / 100
+	// Increased threshold to 90% for less frequent optimization
+	threshold := al.contextWindow * 90 / 100
+	// Increased message threshold to 100 messages (was 40)
+	// This prevents frequent optimizations during normal conversation
+	needsSummarization := len(newHistory) > 100 || tokenEstimate > threshold
+	
+	if !needsSummarization {
+		return
+	}
 
-	if len(newHistory) > 20 || tokenEstimate > threshold {
-		if _, loading := al.summarizing.LoadOrStore(sessionKey, true); !loading {
-			go func() {
-				defer al.summarizing.Delete(sessionKey)
-				// Notify user about optimization if not an internal channel
-				if !constants.IsInternalChannel(channel) {
-					al.bus.PublishOutbound(bus.OutboundMessage{
-						Channel: channel,
-						ChatID:  chatID,
-						Content: "⚠️ Memory threshold reached. Optimizing conversation history...",
-					})
-				}
-				al.summarizeSession(sessionKey)
-			}()
-		}
+	if _, loading := al.summarizing.LoadOrStore(sessionKey, true); !loading {
+		go func() {
+			defer al.summarizing.Delete(sessionKey)
+			// Only notify user if token threshold is exceeded (critical)
+			// Don't notify for message count threshold to avoid spam
+			if tokenEstimate > threshold && !constants.IsInternalChannel(channel) {
+				al.bus.PublishOutbound(bus.OutboundMessage{
+					Channel: channel,
+					ChatID:  chatID,
+					Content: "⚠️ Memory threshold reached. Optimizing conversation history...",
+				})
+			}
+			al.summarizeSession(sessionKey)
+		}()
 	}
 }
 
