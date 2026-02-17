@@ -97,17 +97,10 @@ func (c *TelegramChannel) SetTranscriber(transcriber *voice.GroqTranscriber) {
 	c.transcriber = transcriber
 }
 
-// startThinking starts the typing indicator and placeholder message
-// Similar to OpenClaw's behavior - shows the bot is actively working
+// startThinking starts the typing indicator
+// Similar to OpenClaw's behavior - shows "bot is typing..." in Telegram
+// No placeholder message is sent, just the native typing indicator
 func (c *TelegramChannel) startThinking(ctx context.Context, chatID int64, chatIDStr string) {
-	// Send typing action (shows "typing..." in chat)
-	err := c.bot.SendChatAction(ctx, tu.ChatAction(tu.ID(chatID), telego.ChatActionTyping))
-	if err != nil {
-		logger.DebugCF("telegram", "Failed to send typing action", map[string]interface{}{
-			"error": err.Error(),
-		})
-	}
-
 	// Stop any previous thinking animation
 	if prevStop, ok := c.stopThinking.Load(chatIDStr); ok {
 		if cf, ok := prevStop.(*thinkingCancel); ok && cf != nil {
@@ -119,20 +112,19 @@ func (c *TelegramChannel) startThinking(ctx context.Context, chatID int64, chatI
 	_, thinkCancel := context.WithTimeout(ctx, 5*time.Minute)
 	c.stopThinking.Store(chatIDStr, &thinkingCancel{fn: thinkCancel})
 
-	// Send placeholder message that will be edited later
-	// Using a simple emoji that indicates processing
-	pMsg, err := c.bot.SendMessage(ctx, tu.Message(tu.ID(chatID), "⏳"))
-	if err == nil {
-		c.placeholders.Store(chatIDStr, pMsg.MessageID)
-	} else {
-		logger.DebugCF("telegram", "Failed to send placeholder", map[string]interface{}{
+	// Send typing action (shows "typing..." in chat header)
+	// This is the native Telegram typing indicator
+	err := c.bot.SendChatAction(ctx, tu.ChatAction(tu.ID(chatID), telego.ChatActionTyping))
+	if err != nil {
+		logger.DebugCF("telegram", "Failed to send typing action", map[string]interface{}{
 			"error": err.Error(),
 		})
 	}
 
 	// Keep sending typing action periodically while processing
+	// Telegram typing indicator lasts ~5 seconds, so we refresh every 4 seconds
 	go func() {
-		ticker := time.NewTicker(4 * time.Second) // Telegram typing lasts ~5 seconds
+		ticker := time.NewTicker(4 * time.Second)
 		defer ticker.Stop()
 		
 		for {
