@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
-	"regexp"
 	"strings"
 )
 
@@ -35,7 +34,7 @@ func (p *KimiCliProvider) Chat(ctx context.Context, messages []Message, tools []
 	prompt := p.buildPrompt(messages, nil)
 
 	args := []string{
-		"--print",
+		"--quiet", // Alias for --print --output-format text --final-message-only
 		"--yolo",
 	}
 
@@ -174,16 +173,14 @@ func (p *KimiCliProvider) buildToolsPrompt(tools []ToolDefinition) string {
 // Max response length to prevent excessive output
 const maxKimiResponseLength = 10000 // 10K characters max
 
-// parseOutput processes the output from kimi --print.
-// The kimi CLI can output in different formats - we need to extract just the assistant's response text.
+// parseOutput processes the output from kimi --quiet.
+// With --quiet flag, the output should be clean text (final assistant message only).
 func (p *KimiCliProvider) parseOutput(output string) (*LLMResponse, error) {
 	content := strings.TrimSpace(output)
 	
-	// Try to extract text from structured format (TurnBegin/TextPart/TurnEnd)
-	// This handles the debug/structured output format
-	if extracted := extractTextFromStructuredOutput(content); extracted != "" {
-		content = extracted
-	}
+	// With --quiet, output should be clean, but let's handle edge cases
+	// Remove any remaining debug prefixes or suffixes
+	content = cleanKimiOutput(content)
 	
 	// Truncate if response is excessively long
 	if len(content) > maxKimiResponseLength {
@@ -208,54 +205,49 @@ func (p *KimiCliProvider) parseOutput(output string) (*LLMResponse, error) {
 	}, nil
 }
 
-// extractTextFromStructuredOutput extracts the actual response text from Kimi's structured output format
-// Example format:
-// TurnBegin(...)
-// StepBegin(...)
-// TextPart(type='text', text='ACTUAL RESPONSE HERE')
-// TurnEnd()
-func extractTextFromStructuredOutput(output string) string {
-	// Look for TextPart with text field
-	// Pattern: TextPart(...text='CONTENT'...)
-	// Handle both single and double quotes, and multiline content
+// cleanKimiOutput removes any debug artifacts that might still appear
+func cleanKimiOutput(content string) string {
+	// Remove common debug prefixes
+	lines := strings.Split(content, "\n")
+	var result []string
 	
-	var texts []string
-	
-	// Pattern 1: text='...' (single quotes, multiline)
-	textPartRegex := regexp.MustCompile(`TextPart\([^)]*text=['"](.+?)['"][^)]*\)`)
-	matches := textPartRegex.FindAllStringSubmatch(output, -1)
-	
-	for _, match := range matches {
-		if len(match) > 1 {
-			text := match[1]
-			// Unescape newlines and quotes
-			text = strings.ReplaceAll(text, "\\n", "\n")
-			text = strings.ReplaceAll(text, "\\'", "'")
-			text = strings.ReplaceAll(text, `\"`, `"`)
-			texts = append(texts, text)
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		
+		// Skip debug lines
+		if strings.HasPrefix(trimmed, "TurnBegin(") ||
+			strings.HasPrefix(trimmed, "StepBegin(") ||
+			strings.HasPrefix(trimmed, "StatusUpdate(") ||
+			strings.HasPrefix(trimmed, "TurnEnd(") ||
+			strings.HasPrefix(trimmed, "userinput=") ||
+			strings.HasPrefix(trimmed, "type='text'") ||
+			strings.HasPrefix(trimmed, "contextusage=") ||
+			strings.HasPrefix(trimmed, "tokenusage=") ||
+			strings.HasPrefix(trimmed, "message_id=") ||
+			trimmed == ")" ||
+			trimmed == "(" {
+			continue
 		}
-	}
-	
-	if len(texts) > 0 {
-		return strings.Join(texts, "\n")
-	}
-	
-	// Pattern 2: Try to find content between TurnBegin and TurnEnd
-	turnRegex := regexp.MustCompile(`TurnBegin\([^)]*\)([\s\S]*?)TurnEnd\(\)`)
-	if match := turnRegex.FindStringSubmatch(output); len(match) > 1 {
-		inner := match[1]
-		// Extract text from TextPart inside
-		textRegex := regexp.MustCompile(`text=['"](.+?)['"]`)
-		if textMatch := textRegex.FindStringSubmatch(inner); len(textMatch) > 1 {
-			text := textMatch[1]
-			text = strings.ReplaceAll(text, "\\n", "\n")
-			text = strings.ReplaceAll(text, "\\'", "'")
-			text = strings.ReplaceAll(text, `\"`, `"`)
-			return text
+		
+		// Skip lines that look like debug output
+		if strings.Contains(trimmed, "TextPart(") && strings.Contains(trimmed, "type='text'") {
+			// Extract just the text content if present
+			if idx := strings.Index(trimmed, "text='"); idx != -1 {
+				start := idx + 6
+				end := strings.LastIndex(trimmed[start:], "'")
+				if end != -1 {
+					text := trimmed[start : start+end]
+					text = strings.ReplaceAll(text, "\\n", "\n")
+					result = append(result, text)
+					continue
+				}
+			}
+			continue
 		}
+		
+		result = append(result, line)
 	}
 	
-	return ""
+	return strings.Join(result, "\n")
 }
-
 
