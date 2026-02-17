@@ -208,6 +208,11 @@ func (al *AgentLoop) SetChannelManager(cm *channels.Manager) {
 	al.channelManager = cm
 }
 
+// GetToolRegistry returns the tool registry for external tool registration
+func (al *AgentLoop) GetToolRegistry() *tools.ToolRegistry {
+	return al.tools
+}
+
 // RecordLastChannel records the last active channel for this workspace.
 // This uses the atomic state save mechanism to prevent data loss on crash.
 func (al *AgentLoop) RecordLastChannel(channel string) error {

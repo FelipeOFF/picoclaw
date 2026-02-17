@@ -32,6 +32,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/health"
 	"github.com/sipeed/picoclaw/pkg/heartbeat"
 	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/sipeed/picoclaw/pkg/memory"
 	"github.com/sipeed/picoclaw/pkg/migrate"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/skills"
@@ -542,6 +543,37 @@ func gatewayCmd() {
 
 	msgBus := bus.NewMessageBus()
 	agentLoop := agent.NewAgentLoop(cfg, msgBus, provider)
+
+	// Initialize memory system
+	var memoryStore *memory.MemoryStore
+	memoryConfig := memory.DefaultConfig(cfg.WorkspacePath())
+	
+	// Try to use OpenAI if API key is available
+	if cfg.Providers.OpenAI.APIKey != "" {
+		memoryConfig.EmbeddingProvider = "openai"
+		memoryConfig.OpenAIAPIKey = cfg.Providers.OpenAI.APIKey
+		memoryConfig.EmbeddingModel = "text-embedding-3-small"
+		logger.InfoC("memory", "Using OpenAI embeddings for memory")
+	} else {
+		// Fallback to simple embedder
+		memoryConfig.EmbeddingProvider = "simple"
+		logger.InfoC("memory", "Using simple embedder for memory (no OpenAI API key)")
+	}
+	
+	memoryStore, err = memory.NewMemoryStore(memoryConfig)
+	if err != nil {
+		logger.WarnCF("memory", "Failed to initialize memory store", map[string]interface{}{
+			"error": err.Error(),
+		})
+		fmt.Printf("⚠ Warning: Memory system not initialized: %v\n", err)
+	} else {
+		// Register memory tools
+		toolRegistry := agentLoop.GetToolRegistry()
+		if toolRegistry != nil {
+			memory.RegisterWithToolRegistry(toolRegistry, memoryStore)
+			fmt.Printf("✓ Memory system initialized (%d dimensions)\n", memoryStore.Embedder().Dimensions())
+		}
+	}
 
 	// Print agent startup info
 	fmt.Println("\n📦 Agent Status:")
