@@ -29,7 +29,9 @@ func (p *KimiCliProvider) Chat(ctx context.Context, messages []Message, tools []
 		return nil, fmt.Errorf("kimi command not configured")
 	}
 
-	prompt := p.buildPrompt(messages, tools)
+	// Note: Kimi CLI has its own tool system, we don't pass tools through the prompt
+	// as it uses a different format. The CLI will use its built-in tools.
+	prompt := p.buildPrompt(messages, nil)
 
 	args := []string{
 		"--print",
@@ -44,9 +46,9 @@ func (p *KimiCliProvider) Chat(ctx context.Context, messages []Message, tools []
 		args = append(args, "--work-dir", p.workspace)
 	}
 
-	args = append(args, "--prompt", prompt)
-
+	// Pass prompt via stdin to avoid "argument list too long" error
 	cmd := exec.CommandContext(ctx, p.command, args...)
+	cmd.Stdin = bytes.NewReader([]byte(prompt))
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
