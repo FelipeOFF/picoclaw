@@ -26,11 +26,11 @@ SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 # Detect picoclaw binary location
 detect_picoclaw() {
     if command -v picoclaw &> /dev/null; then
-        PICOC LAW_BIN=$(which picoclaw)
+        PICOC_LAW_BIN=$(which picoclaw)
     elif [ -f "$USER_HOME/.local/bin/picoclaw" ]; then
-        PICOC LAW_BIN="$USER_HOME/.local/bin/picoclaw"
+        PICOC_LAW_BIN="$USER_HOME/.local/bin/picoclaw"
     elif [ -f "$USER_HOME/picoclaw-git/picoclaw" ]; then
-        PICOC LAW_BIN="$USER_HOME/picoclaw-git/picoclaw"
+        PICOC_LAW_BIN="$USER_HOME/picoclaw-git/picoclaw"
     else
         echo -e "${RED}❌ PicoClaw binary not found!${NC}"
         echo "Please install PicoClaw first or add it to your PATH"
@@ -112,7 +112,7 @@ Environment="HOME=$USER_HOME"
 Environment="USER=$USER_NAME"
 Environment="PATH=$USER_HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
 Environment="PICOCLAW_CONFIG=$USER_HOME/.picoclaw/config.json"
-ExecStart=$PICOC LAW_BIN gateway
+ExecStart=$PICOC_LAW_BIN gateway
 ExecReload=/bin/kill -HUP \$MAINPID
 Restart=on-failure
 RestartSec=10
