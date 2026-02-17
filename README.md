@@ -673,6 +673,8 @@ The subagent has access to tools (message, web_search, etc.) and can communicate
 | -------------------------- | --------------------------------------- | ------------------------------------------------------ |
 | `gemini`                   | LLM (Gemini direct)                     | [aistudio.google.com](https://aistudio.google.com)     |
 | `zhipu`                    | LLM (Zhipu direct)                      | [bigmodel.cn](bigmodel.cn)                             |
+| `kimi`                     | LLM (Kimi/Moonshot AI direct)           | [platform.moonshot.cn](https://platform.moonshot.cn)   |
+| `kimi-cli`                 | LLM (via Kimi CLI tool)                 | Install: `curl -LsSf https://code.kimi.com/install.sh \| bash` |
 | `openrouter(To be tested)` | LLM (recommended, access to all models) | [openrouter.ai](https://openrouter.ai)                 |
 | `anthropic(To be tested)`  | LLM (Claude direct)                     | [console.anthropic.com](https://console.anthropic.com) |
 | `openai(To be tested)`     | LLM (GPT direct)                        | [platform.openai.com](https://platform.openai.com)     |
@@ -713,6 +715,87 @@ The subagent has access to tools (message, web_search, etc.) and can communicate
 ```bash
 picoclaw agent -m "Hello"
 ```
+
+</details>
+
+<details>
+<summary><b>Kimi (Moonshot AI)</b></summary>
+
+**1. Get API key**
+
+* Get your API key from [platform.moonshot.cn](https://platform.moonshot.cn)
+
+**2. Configure**
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "workspace": "~/.picoclaw/workspace",
+      "provider": "kimi",
+      "model": "kimi-k2.5",
+      "max_tokens": 8192,
+      "temperature": 0.7,
+      "max_tool_iterations": 20
+    }
+  },
+  "providers": {
+    "kimi": {
+      "api_key": "YOUR_KIMI_API_KEY",
+      "api_base": "https://api.moonshot.cn/v1"
+    }
+  }
+}
+```
+
+**3. Run**
+
+```bash
+picoclaw agent -m "Hello"
+```
+
+> **Note:** Kimi k2 models only support `temperature=1`. The provider will automatically adjust this for k2 models.
+
+</details>
+
+<details>
+<summary><b>Kimi CLI (via installed tool)</b></summary>
+
+Use this provider if you have the Kimi CLI tool installed and want to use its credentials.
+
+**1. Install Kimi CLI**
+
+```bash
+# Linux / macOS
+curl -LsSf https://code.kimi.com/install.sh | bash
+```
+
+**2. Login to Kimi CLI**
+
+```bash
+kimi login
+```
+
+**3. Configure PicoClaw to use Kimi CLI**
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "provider": "kimi-cli",
+      "model": "kimi-cli"
+    }
+  }
+}
+```
+
+**4. Run**
+
+```bash
+picoclaw agent -m "Hello"
+```
+
+> **Note:** The `kimi-cli` provider uses the Kimi CLI tool installed on your system. It runs in non-interactive mode (`kimi --print`).
 
 </details>
 

@@ -313,6 +313,12 @@ func CreateProvider(cfg *config.Config) (LLMProvider, error) {
 				workspace = "."
 			}
 			return NewCodexCliProvider(workspace), nil
+		case "kimi-cli", "kimi-code":
+			workspace := cfg.WorkspacePath()
+			if workspace == "" {
+				workspace = "."
+			}
+			return NewKimiCliProvider(workspace), nil
 		case "deepseek":
 			if cfg.Providers.DeepSeek.APIKey != "" {
 				apiKey = cfg.Providers.DeepSeek.APIKey
@@ -331,7 +337,14 @@ func CreateProvider(cfg *config.Config) (LLMProvider, error) {
 				apiBase = "localhost:4321"
 			}
 			return NewGitHubCopilotProvider(apiBase, cfg.Providers.GitHubCopilot.ConnectMode, model)
-
+		case "kimi", "moonshot":
+			if cfg.Providers.Moonshot.APIKey != "" {
+				return NewKimiProvider(
+					cfg.Providers.Moonshot.APIKey,
+					cfg.Providers.Moonshot.APIBase,
+					cfg.Providers.Moonshot.Proxy,
+				), nil
+			}
 		}
 
 	}
@@ -339,13 +352,12 @@ func CreateProvider(cfg *config.Config) (LLMProvider, error) {
 	// Fallback: detect provider from model name
 	if apiKey == "" && apiBase == "" {
 		switch {
-		case (strings.Contains(lowerModel, "kimi") || strings.Contains(lowerModel, "moonshot") || strings.HasPrefix(model, "moonshot/")) && cfg.Providers.Moonshot.APIKey != "":
-			apiKey = cfg.Providers.Moonshot.APIKey
-			apiBase = cfg.Providers.Moonshot.APIBase
-			proxy = cfg.Providers.Moonshot.Proxy
-			if apiBase == "" {
-				apiBase = "https://api.moonshot.cn/v1"
-			}
+		case (strings.Contains(lowerModel, "kimi") || strings.Contains(lowerModel, "moonshot") || strings.HasPrefix(model, "moonshot/") || strings.HasPrefix(model, "kimi/")) && cfg.Providers.Moonshot.APIKey != "":
+			return NewKimiProvider(
+				cfg.Providers.Moonshot.APIKey,
+				cfg.Providers.Moonshot.APIBase,
+				cfg.Providers.Moonshot.Proxy,
+			), nil
 
 		case strings.HasPrefix(model, "openrouter/") || strings.HasPrefix(model, "anthropic/") || strings.HasPrefix(model, "openai/") || strings.HasPrefix(model, "meta-llama/") || strings.HasPrefix(model, "deepseek/") || strings.HasPrefix(model, "google/"):
 			apiKey = cfg.Providers.OpenRouter.APIKey
