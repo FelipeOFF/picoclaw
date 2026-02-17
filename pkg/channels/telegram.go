@@ -233,8 +233,10 @@ func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) err
 
 	content := msg.Content
 	
-	// Use streaming sender for large messages (optimized for multi-core)
-	// This handles splitting, parallel processing, and rate limiting
+	// Clean up the content - remove markdown/html artifacts for plain text
+	content = cleanTelegramText(content)
+	
+	// Use streaming sender for large messages
 	if c.streamingSender != nil && len(content) > telegramMaxMessageLengthSafe {
 		logger.InfoCF("telegram", "Using streaming sender for large message", map[string]interface{}{
 			"content_length": len(content),
@@ -242,35 +244,23 @@ func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) err
 		})
 		return c.streamingSender.SendLargeMessageParallel(ctx, chatID, content)
 	}
-	
-	// For smaller messages, use normal send with HTML formatting
-	htmlContent := markdownToTelegramHTML(content)
 
-	// Try to edit placeholder
+	// Try to edit placeholder first
 	if pID, ok := c.placeholders.Load(msg.ChatID); ok {
 		c.placeholders.Delete(msg.ChatID)
-		editMsg := tu.EditMessageText(tu.ID(chatID), pID.(int), htmlContent)
-		editMsg.ParseMode = telego.ModeHTML
-
+		editMsg := tu.EditMessageText(tu.ID(chatID), pID.(int), content)
+		// No ParseMode = plain text
 		if _, err = c.bot.EditMessageText(ctx, editMsg); err == nil {
 			return nil
 		}
 		// Fallback to new message if edit fails
 	}
 
-	tgMsg := tu.Message(tu.ID(chatID), htmlContent)
-	tgMsg.ParseMode = telego.ModeHTML
-
-	if _, err = c.bot.SendMessage(ctx, tgMsg); err != nil {
-		logger.ErrorCF("telegram", "HTML parse failed, falling back to plain text", map[string]interface{}{
-			"error": err.Error(),
-		})
-		tgMsg.ParseMode = ""
-		_, err = c.bot.SendMessage(ctx, tgMsg)
-		return err
-	}
-
-	return nil
+	// Send as plain text (no HTML/Markdown parsing)
+	tgMsg := tu.Message(tu.ID(chatID), content)
+	// ParseMode empty = plain text
+	_, err = c.bot.SendMessage(ctx, tgMsg)
+	return err
 }
 
 // sendSplitMessages splits a long message into multiple Telegram messages
@@ -581,6 +571,48 @@ func parseChatID(chatIDStr string) (int64, error) {
 	var id int64
 	_, err := fmt.Sscanf(chatIDStr, "%d", &id)
 	return id, err
+}
+
+// cleanTelegramText removes markdown/html artifacts for plain text output
+// Similar to OpenClaw's approach - clean, readable text without formatting
+func cleanTelegramText(text string) string {
+	if text == "" {
+		return ""
+	}
+
+	// Remove markdown headers
+	text = regexp.MustCompile(`(?m)^#{1,6}\s*`).ReplaceAllString(text, "")
+	
+	// Remove markdown bold/italic markers but keep content
+	text = regexp.MustCompile(`\*\*([^*]+)\*\*`).ReplaceAllString(text, "$1")
+	text = regexp.MustCompile(`__([^_]+)__`).ReplaceAllString(text, "$1")
+	text = regexp.MustCompile(`_([^_]+)_`).ReplaceAllString(text, "$1")
+	text = regexp.MustCompile(`\*([^*]+)\*`).ReplaceAllString(text, "$1")
+	
+	// Remove strikethrough
+	text = regexp.MustCompile(`~~(.+?)~~`).ReplaceAllString(text, "$1")
+	
+	// Convert markdown links to plain text (just the text, not URL)
+	text = regexp.MustCompile(`\[([^\]]+)\]\([^)]+\)`).ReplaceAllString(text, "$1")
+	
+	// Remove code block markers but keep content
+	text = regexp.MustCompile("```\\w*\\n?").ReplaceAllString(text, "")
+	text = regexp.MustCompile("```").ReplaceAllString(text, "")
+	text = regexp.MustCompile("`([^`]+)`").ReplaceAllString(text, "$1")
+	
+	// Remove HTML tags
+	text = regexp.MustCompile(`<[^>]+>`).ReplaceAllString(text, "")
+	
+	// Remove blockquote markers
+	text = regexp.MustCompile(`(?m)^>\s*`).ReplaceAllString(text, "")
+	
+	// Clean up multiple newlines
+	text = regexp.MustCompile(`\n{3,}`).ReplaceAllString(text, "\n\n")
+	
+	// Trim whitespace
+	text = strings.TrimSpace(text)
+	
+	return text
 }
 
 func markdownToTelegramHTML(text string) string {

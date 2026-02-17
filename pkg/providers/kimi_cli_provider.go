@@ -84,31 +84,50 @@ func (p *KimiCliProvider) GetDefaultModel() string {
 }
 
 // buildPrompt converts messages to a prompt string for the Kimi CLI.
-// System messages are prepended as instructions.
+// For Telegram/chat use, we only send the LAST user message to avoid
+// the CLI echoing back the entire conversation history.
 func (p *KimiCliProvider) buildPrompt(messages []Message, tools []ToolDefinition) string {
-	var systemParts []string
-	var conversationParts []string
-
-	for _, msg := range messages {
-		switch msg.Role {
-		case "system":
-			systemParts = append(systemParts, msg.Content)
-		case "user":
-			conversationParts = append(conversationParts, msg.Content)
-		case "assistant":
-			conversationParts = append(conversationParts, "Assistant: "+msg.Content)
-		case "tool":
-			conversationParts = append(conversationParts,
-				fmt.Sprintf("[Tool Result for %s]: %s", msg.ToolCallID, msg.Content))
+	// Find the last user message - this is what we want to respond to
+	var lastUserMessage string
+	var systemPrompt string
+	
+	for i := len(messages) - 1; i >= 0; i-- {
+		msg := messages[i]
+		if msg.Role == "user" && lastUserMessage == "" {
+			lastUserMessage = msg.Content
 		}
+		if msg.Role == "system" && systemPrompt == "" {
+			systemPrompt = msg.Content
+		}
+	}
+
+	// If no user message found, return empty
+	if lastUserMessage == "" {
+		return ""
 	}
 
 	var sb strings.Builder
 
-	if len(systemParts) > 0 {
-		sb.WriteString("## System Instructions\n\n")
-		sb.WriteString(strings.Join(systemParts, "\n\n"))
-		sb.WriteString("\n\n## Task\n\n")
+	// Add condensed system prompt (just the essential parts)
+	if systemPrompt != "" {
+		// Extract just the first paragraph or key instructions
+		lines := strings.Split(systemPrompt, "\n")
+		var essentialLines []string
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			// Skip markdown headers and empty lines
+			if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "-") {
+				continue
+			}
+			essentialLines = append(essentialLines, line)
+			if len(essentialLines) >= 3 {
+				break
+			}
+		}
+		if len(essentialLines) > 0 {
+			sb.WriteString(strings.Join(essentialLines, ". "))
+			sb.WriteString("\n\n")
+		}
 	}
 
 	if len(tools) > 0 {
@@ -116,12 +135,8 @@ func (p *KimiCliProvider) buildPrompt(messages []Message, tools []ToolDefinition
 		sb.WriteString("\n\n")
 	}
 
-	// Simplify single user message (no prefix)
-	if len(conversationParts) == 1 && len(systemParts) == 0 && len(tools) == 0 {
-		return conversationParts[0]
-	}
-
-	sb.WriteString(strings.Join(conversationParts, "\n"))
+	// Just the user message - no conversation history
+	sb.WriteString(lastUserMessage)
 	return sb.String()
 }
 
