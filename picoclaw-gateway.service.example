@@ -1,0 +1,30 @@
+[Unit]
+Description=PicoClaw Gateway - Ultra-lightweight AI Assistant
+Documentation=https://github.com/sipeed/picoclaw
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%USER%
+Group=%GROUP%
+WorkingDirectory=%HOME%
+Environment="HOME=%HOME%"
+Environment="USER=%USER%"
+Environment="PATH=%HOME%/.local/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="PICOCLAW_CONFIG=%HOME%/.picoclaw/config.json"
+ExecStart=%PICOC_LAW_PATH% gateway
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=picoclaw-gateway
+
+# Security hardening
+NoNewPrivileges=false
+ProtectSystem=no
+ProtectHome=no
+
+[Install]
+WantedBy=multi-user.target
