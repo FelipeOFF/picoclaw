@@ -18,8 +18,14 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Get current user info
-USER_NAME=$(whoami)
-USER_HOME="$HOME"
+# Handle sudo case: get the actual user who ran sudo
+if [ -n "$SUDO_USER" ]; then
+    USER_NAME="$SUDO_USER"
+    USER_HOME=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+else
+    USER_NAME=$(whoami)
+    USER_HOME="$HOME"
+fi
 SERVICE_NAME="picoclaw-gateway"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 
